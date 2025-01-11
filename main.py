@@ -10,6 +10,38 @@ from PyQt5.QtGui import QImage, QPixmap
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 
 
+
+
+def process_image(image, gamma, t, convert_to_8_bit):
+
+    if image.dtype == np.uint16:
+        img_float32 = image.astype(np.float32) / 65535.0
+        hsv_16bit = cv2.cvtColor(img_float32, cv2.COLOR_BGR2HSV_FULL)
+        h, s, v = cv2.split(hsv_16bit)
+        v_float = v
+        v_gamma = np.power(v_float, gamma)
+        v_new = t * (1 - v_gamma) + (1 - t) * v_gamma
+        hsv_new = cv2.merge([h, s, v_new])
+        imgfloat = cv2.cvtColor(hsv_new, cv2.COLOR_HSV2BGR_FULL)
+
+        if convert_to_8_bit:
+            out_img = (imgfloat*255+0.5).astype('uint8')
+    else:
+        hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+        h, s, v = cv2.split(hsv)
+
+        v_float = v.astype(np.float32) / 255.0
+        v_gamma = np.power(v_float, gamma) * 255.0
+        v_gamma = v_gamma.astype(np.uint8)
+
+        v_new = t * (255 - v_gamma) + (1 - t) * v_gamma
+        v_new = v_new.astype(np.uint8)
+
+        hsv_new = cv2.merge([h, s, v_new])
+        out_img = cv2.cvtColor(hsv_new, cv2.COLOR_HSV2BGR)
+
+    return out_img
+
 class ImageConverterThread(QThread):
     progress = pyqtSignal(int)
     finished = pyqtSignal()
@@ -34,7 +66,7 @@ class ImageConverterThread(QThread):
             target_path = os.path.join(self.target_dir, filename)
 
             image = cv2.imread(source_path)
-            processed_image = self.process_image(image, self.gamma, self.t)
+            processed_image = process_image(image, self.gamma, self.t, convert_to_8_bit=False)
             cv2.imwrite(target_path, processed_image)
 
             self.progress.emit(int((i + 1) / total_files * 100))
@@ -45,20 +77,6 @@ class ImageConverterThread(QThread):
             json.dump(params,f, indent=4)
 
         self.finished.emit()
-
-    def process_image(self, image, gamma, t):
-        hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-        h, s, v = cv2.split(hsv)
-
-        v_float = v.astype(np.float32) / 255.0
-        v_gamma = np.power(v_float, gamma) * 255.0
-        v_gamma = v_gamma.astype(np.uint8)
-
-        v_new = t * (255 - v_gamma) + (1 - t) * v_gamma
-        v_new = v_new.astype(np.uint8)
-
-        hsv_new = cv2.merge([h, s, v_new])
-        return cv2.cvtColor(hsv_new, cv2.COLOR_HSV2BGR)
 
     def stop(self):
         self.is_running = False
@@ -71,7 +89,13 @@ class ImageProcessor(QMainWindow):
 
     def initUI(self):
         self.setWindowTitle('Image Processor')
-        self.setGeometry(100, 100, 800, 600)
+
+        screen = QApplication.primaryScreen().size()
+        x = screen.width() // 6
+        y = screen.height() // 6
+        size_x = 2*screen.width()//3
+        size_y = 2*screen.height()//3
+        self.setGeometry(x, y, size_x, size_y)
 
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -147,7 +171,7 @@ class ImageProcessor(QMainWindow):
         self.image_path = None
 
     def load_image(self):
-        image_path, _ = QFileDialog.getOpenFileName(self, "Open Image", "", "Image Files (*.png *.jpg *.bmp)")
+        image_path, _ = QFileDialog.getOpenFileName(self, "Open Image", "", "Image Files (*.png *.jpg *.bmp *.tif *.TIFF *.tiff)")
         if image_path:
             self.image = cv2.imread(image_path, -1)
             self.scale_image()
@@ -157,8 +181,8 @@ class ImageProcessor(QMainWindow):
     def scale_image(self):
         if self.image is not None:
             screen = QApplication.primaryScreen().size()
-            target_width = screen.width() // 4
-            target_height = screen.height() // 4
+            target_width = screen.width() // 2
+            target_height = screen.height() // 2
 
             h, w = self.image.shape[:2]
             aspect_ratio = w / h
@@ -181,26 +205,13 @@ class ImageProcessor(QMainWindow):
             t = self.inverse_slider.value() / 100.0
             self.t_value_label.setText(f"t = {t:.2f}")
 
-            self.processed_image = self.process_image(self.image, gamma, t)
+            self.processed_image = process_image(self.image, gamma, t, convert_to_8_bit=True)
             height, width, channel = self.processed_image.shape
             bytes_per_line = 3 * width
             q_image = QImage(self.processed_image.data, width, height, bytes_per_line,
                              QImage.Format_RGB888).rgbSwapped()
+            
             self.image_label.setPixmap(QPixmap.fromImage(q_image))
-
-    def process_image(self, image, gamma, t):
-        hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-        h, s, v = cv2.split(hsv)
-
-        v_float = v.astype(np.float32) / 255.0
-        v_gamma = np.power(v_float, gamma) * 255.0
-        v_gamma = v_gamma.astype(np.uint8)
-
-        v_new = t * (255 - v_gamma) + (1 - t) * v_gamma
-        v_new = v_new.astype(np.uint8)
-
-        hsv_new = cv2.merge([h, s, v_new])
-        return cv2.cvtColor(hsv_new, cv2.COLOR_HSV2BGR)
 
     def save_image(self):
         if self.processed_image is not None:
